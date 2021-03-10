@@ -4,7 +4,7 @@ import csv
 
 class CsvQuery:
 
-    def __init__(self, params):
+    def __init__(self, command, delimiter, encoding):
         KEYWORDS = {
             'SELECT': self.parse_fields,
             'FROM': self.parse_tablename,
@@ -14,6 +14,8 @@ class CsvQuery:
             'ORDER': self.parse_sort,
             'LIMIT': self.parse_limit,
         }
+        self.delimiter = delimiter
+        self.encoding = encoding
         self.reader = None
         self.field_list = {}
         self.conditions = {
@@ -27,15 +29,16 @@ class CsvQuery:
         self.parse_function = None
         self.reverse_sorting = False
         self.all_fields = False
-        param_list = params.split(' ')
-        for param in param_list:
-            new_function = KEYWORDS.get(param.upper())
+        for word in command.split(' '):
+            if not word:
+                continue
+            new_function = KEYWORDS.get(word.upper())
             if new_function:
                 self.parse_function = new_function
             elif self.parse_function:
-                self.parse_function(param)
+                self.parse_function(word)
             else:
-                raise Exception(f'Unknown "{param}" ..!!')
+                raise Exception(f'Unknown "{word}" ..!!')
 
     def parse_fields(self, param):
         if param == '*':
@@ -47,12 +50,19 @@ class CsvQuery:
         if '(' in field:
             func_type, field = field.split('(')
             field = field.replace(')', '')
-        self.field_list.setdefault(field, []).append(func_type)
+        # --------------------------------------
+        self.field_list.setdefault(
+            field, []
+        ).append(
+            func_type.lower()
+        )
+        # --------------------------------------
 
     def parse_tablename(self, param):
         self.reader = csv.DictReader(
-            open(param, 'r'),
-            delimiter=','
+            open(param, 'r', 
+                encoding=self.encoding
+            ),delimiter=self.delimiter
         )
         if self.all_fields:
             names = self.reader.fieldnames
@@ -81,8 +91,6 @@ class CsvQuery:
 
     def parse_group(self, param):
         param = param.replace(' ', '')
-        if not param:
-            return
         if param.upper() == 'BY':
             self.limit = 0
             return
@@ -211,17 +219,39 @@ def try_numeric(s):
             return int(s)
     return s        
 
+def extract_args():
+    is_param = False
+    last_flag = ''
+    result = {
+        'delimiter': ',',
+        'encoding': None,
+    }
+    for arg in sys.argv:
+        if is_param:
+            if last_flag == '-d':
+                result['delimiter'] = arg
+                last_flag = ''
+            elif last_flag == '-e':
+                result['encoding'] = arg
+                last_flag = ''
+            elif arg in ['-d', '-e']:
+                last_flag = arg
+            else:
+                result['command'] = arg
+        is_param = True
+    return result
 
 if __name__ == '__main__':
-    if len(sys.argv) == 2:
-        query = CsvQuery(sys.argv[1])
+    if len(sys.argv) > 1:
+        params = extract_args()
+        query = CsvQuery(**params)
         query.run()
     else:
         print('''
-        '* * *  QR 2.0  * * * '
+        '* * *  QR 1.2021.03.10  * * * '
 
         How to use:
-            > python qr.py "<query SQL to CSV file>"
+            > python qr.py "<query SQL to CSV file>" [-d <delimiter>] [-e <encoding>]
         ''')
     # ------------- Exemplos: ------------------------------
     # python qr.py "SELECT nome, idade FROM pessoas.csv WHERE idade < 35 AND sexo = 'F' ORDER BY nome LIMIT 20"
