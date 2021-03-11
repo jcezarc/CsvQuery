@@ -90,7 +90,7 @@ class CsvQuery:
 
     def parse_condition(self, param):
         value = param
-        if param in ['AND', 'OR', 'and', 'or']:
+        if param in ['AND', 'OR', 'and', 'or', 'IN', 'in']:
             value = param.lower()
         elif param == '=':
             value = '=='
