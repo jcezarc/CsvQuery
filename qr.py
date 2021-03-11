@@ -89,6 +89,15 @@ class CsvQuery:
             self.field_list = {f: '' for f in names}
 
     def parse_condition(self, param):
+        elements = param.split('=')
+        if len(elements) > 1:
+            field = elements[0].split('.')[0]
+            self.conditions['fields'].append(field)
+            self.conditions['values'] += '{}=={}'.format(
+                elements[0],
+                elements[-1]
+            )
+            return
         value = param
         if param in ['AND', 'OR', 'and', 'or', 'IN', 'in']:
             value = param.lower()
@@ -137,6 +146,12 @@ class CsvQuery:
             return True
         for field in self.conditions['fields']:
             value = self.try_numeric(row[field])
+            if isinstance(value, str):
+                if '.' in self.conditions['values']:
+                    return False  # -- Expected Type = DATE
+                func = self.field_list[field][-1]
+                if self.group_field and func:
+                    return False # --- Aggregation function (no-String type)
             exec(f"{field} = value")
         return eval(self.conditions['values'])
 
@@ -217,8 +232,9 @@ class CsvQuery:
         head = '\n'
         line = ''
         dataset = self.scan()
-        for field in self.field_list:
-            size = self.size_of[field]
+        for field, size in self.size_of.items():
+            if field not in self.field_list:
+                continue
             head += truncate(field, size)
             line += '-' * (size-3) + '-+-'
         print(head)
@@ -226,7 +242,10 @@ class CsvQuery:
         for row in dataset:
             line = ''
             for field in self.field_list:
-                size = self.size_of[field]
+                if field not in self.size_of:
+                    size = 10
+                else:
+                    size = self.size_of[field]
                 line += truncate(
                     str(row[field]),
                     size-3
@@ -258,7 +277,7 @@ def extract_args():
     FLAGS = {
         '-d': ('delimiter', ','),
         '-e': ('encoding', None),
-        '-f': ('date_format', '%d/%m/%Y'),
+        '-f': ('date_format', 'y-m-d'),
     }
     ignore = True # -- ignore  sys.argv[0]
     key = ''
@@ -299,5 +318,5 @@ if __name__ == '__main__':
     #
     # python qr.py "select sexo, count(*), max(idade) from pessoas.csv GROUP BY sexo order by 2 DESC"
     #
-    # python qr.py "SELECT id_customer, count(*), sum(valor) FROM fat3.csv WHERE datahora_fatura.month = 1 GROUP BY id_customer ORDER BY 2 desc" -d "|" -e utf-8 -f "y-m-d"
+    # python qr.py "SELECT id_customer, count(*), sum(valor) FROM fat3.csv WHERE datahora_fatura.month=1 GROUP BY id_customer ORDER BY 2 desc" -d "|" -e utf-8 -f "y-m-d"
     # ------------------------------------------------------
