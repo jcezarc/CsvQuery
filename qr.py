@@ -164,13 +164,7 @@ class CsvQuery:
                     else:
                         new = f'{func}_{field}'
                     self.size_of[new] = max(size, len(new)) + 5
-                    try:
-                        record[new] = AGG_FUNCS[func](value)
-                    except:
-                        print('------- Erro em "AGG_FUNCS[func](value)" -------')
-                        print('func', func)
-                        print('value', value)
-                        print('-'*20)
+                    record[new] = AGG_FUNCS[func](value)
             result.append(record)
         self.field_list = {f: '' for f in record}
         return result
@@ -240,22 +234,23 @@ class CsvQuery:
             print(line)
 
     def try_numeric(self, expr, separator='.', type_class=float):
-        date_separators = ['/', '-']
-        if separator not in date_separators:
-            for char in [s for s in date_separators if s in expr]:
-                return self.try_numeric( 
-                    expr, char,
-                    lambda s: dt.strptime(s, self.date_format)
-                )
         candidate = expr.replace(' ', '')
         elements = candidate.split(separator)
-        if not elements[0] and separator == '-':
-            elements.pop(0)
-        if elements[0].isnumeric():
+        if candidate.startswith('-'):
+            is_number = elements[0].strip('-').isnumeric()
+        else:
+            is_number = elements[0].isnumeric()
+        if is_number:
             if len(elements) > 1:
                 return type_class(candidate)
             else:
                 return int(candidate)
+        if separator == '.':
+            for char in [s for s in ['/', '-'] if s in expr]:
+                return self.try_numeric( 
+                    expr, char,
+                    lambda s: dt.strptime(s, self.date_format)
+                )
         return expr   
 
 
@@ -288,7 +283,7 @@ if __name__ == '__main__':
         query.run()
     else:
         print('''
-        '* * *  QR 1.2021.03.11  * * * '
+        '* * *  QR 1.2021.03.11 r 11.25  * * * '
 
         How to use:
             > python qr.py "<command>" [-d ...] [-e ...] [-f ...]
@@ -303,4 +298,6 @@ if __name__ == '__main__':
     # python qr.py "select * from pessoas.csv where nome like '%Rosa%'"
     #
     # python qr.py "select sexo, count(*), max(idade) from pessoas.csv GROUP BY sexo order by 2 DESC"
+    #
+    # python qr.py "SELECT id_customer, count(*), sum(valor) FROM fat3.csv WHERE datahora_fatura.month = 1 GROUP BY id_customer ORDER BY 2 desc" -d "|" -e utf-8 -f "y-m-d"
     # ------------------------------------------------------
