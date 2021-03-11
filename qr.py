@@ -1,10 +1,11 @@
 import sys
 import csv
+from datetime import datetime as dt
 
 
 class CsvQuery:
 
-    def __init__(self, command, delimiter, encoding):
+    def __init__(self, command, delimiter, encoding, date_format):
         KEYWORDS = {
             'SELECT': self.parse_fields,
             'FROM': self.parse_tablename,
@@ -16,6 +17,7 @@ class CsvQuery:
         }
         self.delimiter = delimiter
         self.encoding = encoding
+        self.date_format = date_format
         self.reader = None
         self.field_list = {}
         self.conditions = {
@@ -112,7 +114,7 @@ class CsvQuery:
         if not self.conditions['values']:
             return True
         for field in self.conditions['fields']:
-            value = try_numeric(row[field])
+            value = self.try_numeric(row[field])
             exec(f"{field} = value")
         return eval(self.conditions['values'])
 
@@ -167,7 +169,7 @@ class CsvQuery:
                     self.size_of[field] = curr_size + 5
                 if self.group_field:
                     group.setdefault(key, {}).setdefault(field, []).append(
-                        try_numeric(value)
+                        self.try_numeric(value)
                     )
                 else:
                     record[field] = value
@@ -209,49 +211,62 @@ class CsvQuery:
                 ) + ' | '
             print(line)
 
+    def try_numeric(self, original, separator='.', type_class=float):
+        if separator != '/' and '/' in original:
+            return try_numeric( 
+                original, '/',
+                lambda s: dt.strptime(s, self.date_format)
+            )
+        candidate = original.replace(' ', '')
+        elements = candidate.split(separator)
+        if elements[0].isnumeric():
+            if len(elements) > 1:
+                return type_class(candidate)
+            else:
+                return int(candidate)
+        return original   
 
-def try_numeric(s):
-    num = s.split('.')
-    if num[0].isnumeric():
-        if len(num) == 2:
-            return float(s)
-        else:
-            return int(s)
-    return s        
 
 def extract_args():
-    is_param = False
-    last_flag = ''
-    result = {
-        'delimiter': ',',
-        'encoding': None,
+    FLAGS = {
+        '-d': ('delimiter', ','),
+        '-e': ('encoding', None),
+        '-f': ('date_format', '%d/%m/%Y'),
     }
+    ignore = True # -- ignore  sys.argv[0]
+    key = ''
+    result = {f[0]: f[1] for f in FLAGS.values()}
     for arg in sys.argv:
-        if is_param:
-            if last_flag == '-d':
-                result['delimiter'] = arg
-                last_flag = ''
-            elif last_flag == '-e':
-                result['encoding'] = arg
-                last_flag = ''
-            elif arg in ['-d', '-e']:
-                last_flag = arg
-            else:
-                result['command'] = arg
-        is_param = True
+        if ignore:
+            ignore = False
+            continue
+        if arg in FLAGS:
+            key = FLAGS[arg][0]
+        elif key:
+            result[key] = arg
+            key = ''
+        else:
+            result['command'] = arg
     return result
 
 if __name__ == '__main__':
     if len(sys.argv) > 1:
         params = extract_args()
+        print('-'*10)
+        print(params)
+        print('-'*10)
         query = CsvQuery(**params)
         query.run()
     else:
         print('''
-        '* * *  QR 1.2021.03.10  * * * '
+        '* * *  QR 1.2021.03.11  * * * '
 
         How to use:
-            > python qr.py "<query SQL to CSV file>" [-d <delimiter>] [-e <encoding>]
+            > python qr.py "<command>" [-d ...] [-e ...] [-f ...]
+            options:
+                -d <delimiter>
+                -e <encoding>
+                -f <date format>
         ''')
     # ------------- Exemplos: ------------------------------
     # python qr.py "SELECT nome, idade FROM pessoas.csv WHERE idade < 35 AND sexo = 'F' ORDER BY nome LIMIT 20"
