@@ -18,6 +18,7 @@ class CsvQuery:
         self.delimiter = delimiter
         self.encoding = encoding
         self.date_format = date_format
+        self.adjust_format()
         self.reader = None
         self.field_list = {}
         self.conditions = {
@@ -41,6 +42,23 @@ class CsvQuery:
                 self.parse_function(word)
             else:
                 raise Exception(f'Unknown "{word}" ..!!')
+
+    def adjust_format(self):
+        ELEMENT_MASK = {
+            'd': '%d',
+            'm': '%m',
+            'y': '%Y'
+        }
+        result = ''
+        for separator in ['/', '-']:
+            elements = self.date_format.lower().split(separator)
+            if len(elements) < 3:
+                continue
+            for e in elements:
+                if result:
+                    result += separator
+                result += ELEMENT_MASK[e]
+        self.date_format = result
 
     def parse_fields(self, param):
         if param == '*':
@@ -78,6 +96,10 @@ class CsvQuery:
             value = '=='
         elif param.isidentifier():
             self.conditions['fields'].append(param)
+        elif '.' in param:
+            self.conditions['fields'].append(
+                param.split('.')[0]
+            )
         if self.conditions['values']:
             value = ' ' + value
         self.conditions['values'] += value
@@ -142,7 +164,13 @@ class CsvQuery:
                     else:
                         new = f'{func}_{field}'
                     self.size_of[new] = max(size, len(new)) + 5
-                    record[new] = AGG_FUNCS[func](value)
+                    try:
+                        record[new] = AGG_FUNCS[func](value)
+                    except:
+                        print('------- Erro em "AGG_FUNCS[func](value)" -------')
+                        print('func', func)
+                        print('value', value)
+                        print('-'*20)
             result.append(record)
         self.field_list = {f: '' for f in record}
         return result
@@ -211,20 +239,24 @@ class CsvQuery:
                 ) + ' | '
             print(line)
 
-    def try_numeric(self, original, separator='.', type_class=float):
-        if separator != '/' and '/' in original:
-            return try_numeric( 
-                original, '/',
-                lambda s: dt.strptime(s, self.date_format)
-            )
-        candidate = original.replace(' ', '')
+    def try_numeric(self, expr, separator='.', type_class=float):
+        date_separators = ['/', '-']
+        if separator not in date_separators:
+            for char in [s for s in date_separators if s in expr]:
+                return self.try_numeric( 
+                    expr, char,
+                    lambda s: dt.strptime(s, self.date_format)
+                )
+        candidate = expr.replace(' ', '')
         elements = candidate.split(separator)
+        if not elements[0] and separator == '-':
+            elements.pop(0)
         if elements[0].isnumeric():
             if len(elements) > 1:
                 return type_class(candidate)
             else:
                 return int(candidate)
-        return original   
+        return expr   
 
 
 def extract_args():
@@ -252,9 +284,6 @@ def extract_args():
 if __name__ == '__main__':
     if len(sys.argv) > 1:
         params = extract_args()
-        print('-'*10)
-        print(params)
-        print('-'*10)
         query = CsvQuery(**params)
         query.run()
     else:
