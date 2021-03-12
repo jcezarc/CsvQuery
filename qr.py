@@ -149,7 +149,7 @@ class CsvQuery:
             if isinstance(value, str):
                 if '.' in self.conditions['values']:
                     return False  # -- Expected Type = DATE
-                func = self.field_list[field][-1]
+                func = self.field_list.get(field, [''])[-1]
                 if self.group_field and func:
                     return False # --- Aggregation function (no-String type)
             exec(f"{field} = value")
