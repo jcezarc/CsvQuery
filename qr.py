@@ -1,3 +1,4 @@
+import os
 import sys
 import csv
 from datetime import datetime as dt
@@ -79,6 +80,9 @@ class CsvQuery:
         # --------------------------------------
 
     def parse_tablename(self, param):
+        filename, file_extension = os.path.splitext(param)
+        if not file_extension:
+            param += '.csv'
         self.reader = csv.DictReader(
             open(param, 'r', 
                 encoding=self.encoding
