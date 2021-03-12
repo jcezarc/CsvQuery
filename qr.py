@@ -90,7 +90,7 @@ class CsvQuery:
         )
         if self.all_fields:
             names = self.reader.fieldnames
-            self.field_list = {f: '' for f in names}
+            self.field_list = {f: [''] for f in names}
 
     def parse_condition(self, param):
         elements = param.split('=')
@@ -119,8 +119,16 @@ class CsvQuery:
 
     def parse_like(self, param):
         words = self.conditions['values'].split(' ')
+        removing = True
+        fields = self.conditions['fields']
+        while removing:
+            if words.pop(-1).upper() == 'NOT':
+                param += ' not'
+                self.conditions['fields'] = fields[:-1]
+            else:
+                removing = False
         self.conditions['values'] = '{} {} in {}'.format(
-            ' '.join(words[:-1]),
+            ' '.join(words),
             param.replace('%', ''),
             self.conditions['fields'][-1]
         )
@@ -154,7 +162,7 @@ class CsvQuery:
                 if '.' in self.conditions['values']:
                     return False  # -- Expected Type = DATE
                 func = self.field_list.get(field, [''])[-1]
-                if self.group_field and func:
+                if self.group_field and func != 'count':
                     return False # --- Aggregation function (no-String type)
             exec(f"{field} = value")
         return eval(self.conditions['values'])
@@ -223,7 +231,10 @@ class CsvQuery:
             result = self.aggregate(group)
         if self.sort_by:
             if self.sort_by.isnumeric():
-                i = int(self.sort_by)
+                i = min(
+                    int(self.sort_by),
+                    len(self.field_list)
+                )
                 self.sort_by = list(self.field_list)[i-1]
             result = sorted(result, key=lambda k: k[self.sort_by])
             if self.reverse_sorting: result = result[::-1]
