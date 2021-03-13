@@ -3,6 +3,7 @@ import sys
 import csv
 from datetime import datetime as dt
 
+QR_VERSION = '1.2021.03.13 r 11.40'
 
 class CsvQuery:
 
@@ -12,6 +13,7 @@ class CsvQuery:
             'FROM': self.parse_tablename,
             'WHERE': self.parse_condition,
             'LIKE': self.parse_like,
+            'IN': self.parse_in,
             'GROUP': self.parse_group,
             'ORDER': self.parse_sort,
             'LIMIT': self.parse_limit,
@@ -33,6 +35,7 @@ class CsvQuery:
         self.parse_function = None
         self.reverse_sorting = False
         self.all_fields = False
+        self.sub_query = None
         for word in command.split(' '):
             if not word:
                 continue
@@ -93,6 +96,10 @@ class CsvQuery:
             self.field_list = {f: [''] for f in names}
 
     def parse_condition(self, param):
+        COMPARE_SYMBOLS = {
+            '=': '==',
+            '<>': '!='
+        }
         elements = param.split('=')
         if len(elements) > 1:
             field = elements[0].split('.')[0]
@@ -103,10 +110,12 @@ class CsvQuery:
             )
             return
         value = param
-        if param in ['AND', 'OR', 'and', 'or', 'IN', 'in']:
+        if param in ['AND', 'OR', 'and', 'or']:
             value = param.lower()
-        elif param == '=':
-            value = '=='
+        elif param.split('(')[0].upper() == 'IN':
+            self.parse_function = self.parse_in
+        elif param in COMPARE_SYMBOLS:
+            value = COMPARE_SYMBOLS[param]
         elif param.isidentifier():
             self.conditions['fields'].append(param)
         elif '.' in param:
@@ -116,6 +125,10 @@ class CsvQuery:
         if self.conditions['values']:
             value = ' ' + value
         self.conditions['values'] += value
+
+    def parse_in(self, param):
+        if ')' in param:
+            self.parse_function = self.parse_condition
 
     def parse_like(self, param):
         words = self.conditions['values'].split(' ')
@@ -288,44 +301,53 @@ class CsvQuery:
         return expr   
 
 
-def extract_args():
-    FLAGS = {
+def extract_args(options, default):
+    result = {v[0]: v[1] for v in options.values()}
+    key = ''
+    arg_list = [a for a in sys.argv if a != sys.argv[0]]
+    for arg in arg_list:
+        if arg in options:
+            key = options[arg][0]
+        elif key:
+            if callable(result[key]):
+                func = result[key]
+                result[key] = func(arg)
+            else:
+                result[key] = arg
+            key = ''
+        else:
+            result[default] = arg
+    return result
+
+def load_file(path):
+    with open(path, 'r') as f:
+        text = f.read()
+        f.close()
+    return text.replace('\n', ' ').replace('\t', ' ')
+
+if __name__ == '__main__':
+    options = {
+        '-l': ('command', load_file),
         '-d': ('delimiter', ','),
         '-e': ('encoding', None),
         '-f': ('date_format', 'y-m-d'),
     }
-    ignore = True # -- ignore  sys.argv[0]
-    key = ''
-    result = {f[0]: f[1] for f in FLAGS.values()}
-    for arg in sys.argv:
-        if ignore:
-            ignore = False
-            continue
-        if arg in FLAGS:
-            key = FLAGS[arg][0]
-        elif key:
-            result[key] = arg
-            key = ''
-        else:
-            result['command'] = arg
-    return result
-
-if __name__ == '__main__':
     if len(sys.argv) > 1:
-        params = extract_args()
+        params = extract_args(options, default='command')
         query = CsvQuery(**params)
         query.run()
     else:
+        display = lambda v: v[1].__name__ if callable(v[1]) else v[0]
         print('''
-        '* * *  QR 1.2021.03.11 r 11.25  * * * '
+        '* * *  QR {}  * * * '
 
         How to use:
-            > python qr.py "<command>" [-d ...] [-e ...] [-f ...]
-            options:
-                -d <delimiter>
-                -e <encoding>
-                -f <date format>
-        ''')
+            > python qr.py "<command>" [options]
+            options: {}
+        '''.format(
+            QR_VERSION,
+            ''.join(f'\n\t\t{k} <{display(v)}>' for k, v in options.items())
+        ))
     # ------------- Exemplos: ------------------------------
     # python qr.py "SELECT nome, idade FROM pessoas.csv WHERE idade < 35 AND sexo = 'F' ORDER BY nome LIMIT 20"
     #
