@@ -3,21 +3,11 @@ import sys
 import csv
 from datetime import datetime as dt
 
-QR_VERSION = '1.2021.03.13 r 11.40'
+QR_VERSION = '1.2021.03.14 r 20.58'
 
 class CsvQuery:
 
     def __init__(self, command, delimiter, encoding, date_format):
-        KEYWORDS = {
-            'SELECT': self.parse_fields,
-            'FROM': self.parse_tablename,
-            'WHERE': self.parse_condition,
-            'LIKE': self.parse_like,
-            'IN': self.parse_in,
-            'GROUP': self.parse_group,
-            'ORDER': self.parse_sort,
-            'LIMIT': self.parse_limit,
-        }
         self.delimiter = delimiter
         self.encoding = encoding
         self.date_format = date_format
@@ -35,19 +25,50 @@ class CsvQuery:
         self.parse_function = None
         self.reverse_sorting = False
         self.all_fields = False
-        self.sub_query = None
-        for word in command.split(' '):
+        self.words = command.split(' ')        
+        self.content = ''
+        self.is_subquery = False
+        self.finished = False
+        self.parse()
+
+    def set_words(self, words):
+        self.words = words
+        self.is_subquery = True
+
+    def parse(self):
+        KEYWORDS = {
+            'SELECT': self.get_fields,
+            'FROM': self.get_tablename,
+            'WHERE': self.get_condition,
+            'LIKE': self.get_like_expr,
+            'IN': self.get_sub_query,
+            'GROUP': self.get_group,
+            'ORDER': self.get_sort_field,
+            'LIMIT': self.get_limit,
+        }
+        parenthesis_count = 0
+        while self.words:
+            word = self.words.pop(0)
             if not word:
                 continue
+            if self.is_subquery:
+                if '(' in word:
+                    parenthesis_count +=1
+                if  ')' in word:
+                    parenthesis_count -= 1
+                if not parenthesis_count: break
             new_function = KEYWORDS.get(word.upper())
             if new_function:
                 self.parse_function = new_function
             elif self.parse_function:
                 self.parse_function(word)
             else:
-                raise Exception(f'Unknown "{word}" ..!!')
+                self.content += word
+        self.finished = True
 
     def adjust_format(self):
+        if '%' in self.date_format:
+            return
         ELEMENT_MASK = {
             'd': '%d',
             'm': '%m',
@@ -64,7 +85,7 @@ class CsvQuery:
                 result += ELEMENT_MASK[e]
         self.date_format = result
 
-    def parse_fields(self, param):
+    def get_fields(self, param):
         if param == '*':
             self.all_fields = True
             return
@@ -82,7 +103,7 @@ class CsvQuery:
         )
         # --------------------------------------
 
-    def parse_tablename(self, param):
+    def get_tablename(self, param):
         filename, file_extension = os.path.splitext(param)
         if not file_extension:
             param += '.csv'
@@ -95,7 +116,7 @@ class CsvQuery:
             names = self.reader.fieldnames
             self.field_list = {f: [''] for f in names}
 
-    def parse_condition(self, param):
+    def get_condition(self, param):
         COMPARE_SYMBOLS = {
             '=': '==',
             '<>': '!='
@@ -113,7 +134,7 @@ class CsvQuery:
         if param in ['AND', 'OR', 'and', 'or']:
             value = param.lower()
         elif param.split('(')[0].upper() == 'IN':
-            self.parse_function = self.parse_in
+            self.parse_function = self.get_sub_query
         elif param in COMPARE_SYMBOLS:
             value = COMPARE_SYMBOLS[param]
         elif param.isidentifier():
@@ -126,11 +147,24 @@ class CsvQuery:
             value = ' ' + value
         self.conditions['values'] += value
 
-    def parse_in(self, param):
-        if ')' in param:
-            self.parse_function = self.parse_condition
+    def get_sub_query(self, param):
+        query = CsvQuery(
+            command=param,
+            delimiter=self.delimiter,
+            encoding=self.encoding,
+            date_format=self.date_format
+        )
+        query.set_words(self.words)
+        if not query.finished:
+            query.parse()
+        query.set_content()
+        self.conditions['values'] = '{} in {}'.format(
+            self.conditions['fields'][-1],
+            query.content
+        )
+        self.parse_function = self.get_condition
 
-    def parse_like(self, param):
+    def get_like_expr(self, param):
         words = self.conditions['values'].split(' ')
         removing = True
         fields = self.conditions['fields']
@@ -145,16 +179,16 @@ class CsvQuery:
             param.replace('%', ''),
             self.conditions['fields'][-1]
         )
-        self.parse_function = self.parse_condition
+        self.parse_function = self.get_condition
 
-    def parse_group(self, param):
+    def get_group(self, param):
         param = param.replace(' ', '')
         if param.upper() == 'BY':
             self.limit = 0
             return
         self.group_field = param
 
-    def parse_sort(self, param):
+    def get_sort_field(self, param):
         word = param.upper()
         if word == 'BY':
             return
@@ -163,13 +197,15 @@ class CsvQuery:
             return
         self.sort_by = param
 
-    def parse_limit(self, param):
-        self.limit = int(param)
+    def get_limit(self, param):
+        self.limit = self.try_numeric(param.replace(')', ''))
 
     def filtered_row(self, row):
         if not self.conditions['values']:
             return True
         for field in self.conditions['fields']:
+            if not field: 
+                continue
             value = self.try_numeric(row[field])
             if isinstance(value, str):
                 if '.' in self.conditions['values']:
@@ -225,6 +261,8 @@ class CsvQuery:
             if self.group_field:
                 key = row[self.group_field]
             for field in self.field_list:
+                if not field: 
+                    continue
                 value = row[field]
                 curr_size = len(str(value))
                 if curr_size > self.size_of.get(field, 0):
@@ -237,9 +275,9 @@ class CsvQuery:
                     record[field] = value
             if record:
                 result.append(record)
-            count += 1
-            if count == self.limit:
-                break        
+                count += 1
+                if count == self.limit:
+                    break        
         if group:
             result = self.aggregate(group)
         if self.sort_by:
@@ -251,7 +289,18 @@ class CsvQuery:
                 self.sort_by = list(self.field_list)[i-1]
             result = sorted(result, key=lambda k: k[self.sort_by])
             if self.reverse_sorting: result = result[::-1]
+        if group and self.limit:
+            result = result[:self.limit]
         return result
+
+    def set_content(self):
+        if self.content or not self.field_list:
+            return
+        field = list(self.field_list)[0]
+        result = []
+        for row in self.scan():
+            resut.append(row[field])
+        self.content = result
 
     def run(self):
         def truncate(s, size):
@@ -270,6 +319,8 @@ class CsvQuery:
         for row in dataset:
             line = ''
             for field in self.field_list:
+                if not field:
+                    continue
                 if field not in self.size_of:
                     size = 10
                 else:
@@ -356,4 +407,7 @@ if __name__ == '__main__':
     # python qr.py "select sexo, count(*), max(idade) from pessoas.csv GROUP BY sexo order by 2 DESC"
     #
     # python qr.py "SELECT id_customer, count(*), sum(valor) FROM fat3.csv WHERE datahora_fatura.month=1 GROUP BY id_customer ORDER BY 2 desc" -d "|" -e utf-8 -f "y-m-d"
+    #
+    # python qr.py "select title, movieId from movies where movieId in (527,457,362,333,260,231,163,157,151,101,50,47) LIMIT 15" -e utf-8
+    #
     # ------------------------------------------------------
