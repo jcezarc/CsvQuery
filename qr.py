@@ -3,9 +3,17 @@ import sys
 import csv
 from datetime import datetime as dt
 
-QR_VERSION = '1.2021.03.15 r 21.17'
+QR_VERSION = '0.2021.03.17 r 15.44'
 
 class CsvQuery:
+
+    AGG_FUNCS = {
+        'max': max,
+        'min': min,
+        'sum': sum,
+        'count': len,
+        'avg': lambda x: sum(x) / len(x)
+    }
 
     def __init__(self, command, delimiter, encoding, date_format):
         self.delimiter = delimiter
@@ -16,7 +24,7 @@ class CsvQuery:
         self.field_list = {}
         self.conditions = {
             'fields': [],
-            'values': '',
+            'expr': '',
         }
         self.sort_by = ''
         self.group_field = ''
@@ -24,56 +32,87 @@ class CsvQuery:
         self.size_of = {}
         self.parse_function = None
         self.reverse_sorting = False
-        self.all_fields = False
-        for expr in [' IN(', ' in(', ' IN (', ' in (']:
-            if expr in command:
-                command = command.replace(expr, ' in ( ')
-                i = command.rfind(')')
-                command = command[:i]+' ) '+command[i+1:]
-                break
-        self.words = [c for c in command.split(' ') if c]
-        self.content = ''
-        self.parse()
+        self.all_fields = True
+        self.func_type = ''
+        KEYWORDS = {
+            'SELECT': self.get_fields,
+            'FROM': self.get_tablename,
+            'WHERE': self.get_condition,
+            'LIKE': self.get_like_expr,
+            'IN': self.get_sub_query,
+            'GROUP': self.get_group,
+            'ORDER': self.get_sort_field,
+            'LIMIT': self.get_limit,
+        }
+        for word in self.mult_split(command):
+            new_function = KEYWORDS.get(word.upper())
+            if new_function:
+                self.parse_function = new_function
+            elif self.parse_function:
+                self.parse_function(word)
+            else:
+                raise Exception(f'Unknown {word}')
+
+    @staticmethod
+    def mult_split(s, sep_out='\n\t ,*()',sep_in="><=", sublist_id='IN'):
+        word, result = '', []
+        separators = sep_out+sep_in
+        quotes = False
+        brackets = 0
+        is_sub_list = False
+        for c in s:
+            if c not in separators or quotes:
+                if c == "'":
+                    quotes = not quotes
+                word += c
+            else:
+                if c == '(':
+                    brackets += 1
+                    if brackets == 1 and is_sub_list: 
+                        continue
+                elif c == ')':
+                    brackets -= 1
+                if brackets and is_sub_list:
+                    word += c
+                else:
+                    if word:
+                        if word.upper() == sublist_id:
+                            is_sub_list = True
+                        result.append(word)
+                        word = ''
+                    if c in sep_in:
+                        result.append(c)
+        if word: result.append(word)
+        return result
 
     def adjust_format(self):
-        if '%' in self.date_format:
-            return
         ELEMENT_MASK = {
             'd': '%d',
             'm': '%m',
             'y': '%Y'
         }
-        result = ''
+        if '%' in self.date_format:
+            return
         for separator in ['/', '-']:
             elements = self.date_format.lower().split(separator)
             if len(elements) < 3:
                 continue
-            for e in elements:
-                if result:
-                    result += separator
-                result += ELEMENT_MASK[e]
-        self.date_format = result
+            self.date_format = separator.join([
+                ELEMENT_MASK[e] for e in elements
+            ])
+            return
 
     def get_fields(self, param):
-        if param == '*':
-            self.all_fields = True
-            return
-        # --------------------------------------
-        for p in param.split(','):
-            field = p.strip()
-            if not field:
-                continue
-            self.size_of[field] = len(field) + 3
-            func_type = ''
-            if '(' in field:
-                func_type, field = field.split('(')
-                field = field.replace(')', '')
+        self.all_fields = False
+        if param in self.AGG_FUNCS:
+            self.func_type = param
+        elif param.isidentifier():
             self.field_list.setdefault(
-                field, []
+                param, []
             ).append(
-                func_type.lower()
+                self.func_type.lower()
             )
-        # --------------------------------------
+            self.func_type = ''
 
     def get_tablename(self, param):
         filename, file_extension = os.path.splitext(param)
@@ -93,15 +132,6 @@ class CsvQuery:
             '=': '==',
             '<>': '!='
         }
-        elements = param.split('=')
-        if len(elements) > 1:
-            field = elements[0].split('.')[0]
-            self.conditions['fields'].append(field)
-            self.conditions['values'] += '{}=={}'.format(
-                elements[0],
-                elements[-1]
-            )
-            return
         value = param
         if param in ['AND', 'OR', 'and', 'or', 'NOT', 'not']:
             value = param.lower()
@@ -113,70 +143,46 @@ class CsvQuery:
             self.conditions['fields'].append(
                 param.split('.')[0]
             )
-        if self.conditions['values']:
-            value = ' ' + value
-        self.conditions['values'] += value
-
-    def parse(self, is_subquery=False):
-        KEYWORDS = {
-            'SELECT': self.get_fields,
-            'FROM': self.get_tablename,
-            'WHERE': self.get_condition,
-            'LIKE': self.get_like_expr,
-            'IN': self.get_sub_query,
-            'GROUP': self.get_group,
-            'ORDER': self.get_sort_field,
-            'LIMIT': self.get_limit,
-        }
-        while self.words:
-            word = self.words.pop(0)
-            if not word:
-                continue
-            if is_subquery and word == ')':
-                break
-            new_function = KEYWORDS.get(word.upper())
-            if new_function:
-                self.parse_function = new_function
-            elif self.parse_function:
-                self.parse_function(word)
-            else:
-                self.content += word
-
-    def get_sub_query(self, param):
-        query = CsvQuery(
-            command='',
-            delimiter=self.delimiter,
-            encoding=self.encoding,
-            date_format=self.date_format
-        )
-        query.words = self.words
-        query.parse(True)
-        query.set_content()
-        self.conditions['values'] = '{} in {}'.format(
-            self.conditions['fields'][-1],
-            query.content if query.reader else '('+query.content+')'
-        )
-        self.parse_function = self.get_condition
+        self.conditions['expr'] += value+' '
 
     def get_like_expr(self, param):
-        words = self.conditions['values'].split(' ')
-        removing = True
-        fields = self.conditions['fields']
-        while removing:
-            if words.pop(-1).upper() == 'NOT':
-                param += ' not'
-                self.conditions['fields'] = fields[:-1]
-            else:
-                removing = False
-        self.conditions['values'] = '{} {} in {}'.format(
-            ' '.join(words),
-            param.replace('%', ''),
-            self.conditions['fields'][-1]
+        def rearrange(param, expr, fields):
+            words = [c for c in expr.split(' ') if c]
+            removing = True
+            while removing:
+                if words.pop(-1).upper() == 'NOT':
+                    param += ' not'
+                else:
+                    removing = False
+            return '{} {} in {}'.format(
+                ' '.join(words),
+                param.replace('%', ''),
+                fields[-1]
+            )
+        self.conditions['expr'] = rearrange(param, **self.conditions)
+        self.parse_function = self.get_condition
+
+    def get_sub_query(self, param):
+        try:
+            query = CsvQuery(
+                command=param,
+                delimiter=self.delimiter,
+                encoding=self.encoding,
+                date_format=self.date_format
+            )
+            query.parse(True)
+        except:
+            query = None
+        self.conditions['expr'] = '{} in {}'.format(
+            self.conditions['fields'][-1],
+            query.sample() if query else f'({param})'
         )
+        print('-*/-//*-*-*-*-/*//*/-*--*/-**/')
+        print(self.conditions)
+        print('-*/*/*-*/-*/*/*/-*/-*/*/*-*-*')
         self.parse_function = self.get_condition
 
     def get_group(self, param):
-        param = param.replace(' ', '')
         if param.upper() == 'BY':
             self.limit = 0
             return
@@ -192,40 +198,24 @@ class CsvQuery:
         self.sort_by = param
 
     def get_limit(self, param):
-        self.limit = self.try_numeric(param.replace(')', ''))
+        self.limit = self.try_numeric(param)
 
     def filtered_row(self, row):
-        if not self.conditions['values']:
+        if not self.conditions['expr']:
             return True
         for field in self.conditions['fields']:
-            if not field: 
-                continue
             value = self.try_numeric(row[field])
-            if isinstance(value, str):
-                if '.' in self.conditions['values']:
-                    return False  # -- Expected Type = DATE
-                func = self.field_list.get(field, [''])[-1]
-                if self.group_field and func != 'count':
-                    return False # --- Aggregation function (no-String type)
             exec(f"{field} = value")
-        return eval(self.conditions['values'])
+        return eval(self.conditions['expr'])
 
     def aggregate(self, group):
-        AGG_FUNCS = {
-            'max': max,
-            'min': min,
-            'sum': sum,
-            'count': len,
-            'avg': lambda x: sum(x) / len(x)
-        }
         result = []
         for key, values in group.items():
             record = {}
             for field in self.field_list:
-                is_group = field == self.group_field
+                record[self.group_field] = key
                 for func in self.field_list[field]:
-                    if not func and is_group:
-                        record[field] = key
+                    if not func:
                         continue
                     value = values[field]
                     size = self.size_of[field]
@@ -234,20 +224,14 @@ class CsvQuery:
                     else:
                         new = f'{func}_{field}'
                     self.size_of[new] = max(size, len(new)) + 5
-                    record[new] = AGG_FUNCS[func](value)
+                    record[new] = self.AGG_FUNCS[func](value)
             result.append(record)
-        self.field_list = {f: '' for f in record}
+        self.field_list = {f: [''] for f in record}
         return result
 
     def scan(self):
         result = []
         group = {}
-        count = 0
-        if self.field_list.pop('*', None):
-            self.field_list.setdefault(
-                self.group_field, []
-            ).append('count')
-            self.size_of[self.group_field] = 10
         for row in self.reader:
             if not self.filtered_row(row):
                 continue
@@ -255,8 +239,6 @@ class CsvQuery:
             if self.group_field:
                 key = row[self.group_field]
             for field in self.field_list:
-                if not field: 
-                    continue
                 value = row[field]
                 curr_size = len(str(value))
                 if curr_size > self.size_of.get(field, 0):
@@ -269,9 +251,7 @@ class CsvQuery:
                     record[field] = value
             if record:
                 result.append(record)
-                count += 1
-                if count == self.limit:
-                    break        
+                if len(result) == self.limit: break        
         if group:
             result = self.aggregate(group)
         if self.sort_by:
@@ -287,16 +267,14 @@ class CsvQuery:
             result = result[:self.limit]
         return result
 
-    def set_content(self):
-        if self.content or not self.field_list:
-            return
+    def sample(self):
         field = list(self.field_list)[0]
         result = []
         for row in self.scan():
             result.append(
                 self.try_numeric(row[field])
             )
-        self.content = result
+        return result
 
     def run(self):
         def truncate(s, size):
@@ -370,10 +348,7 @@ def load_file(path):
     with open(path, 'r') as f:
         text = f.read()
         f.close()
-    text = text.replace('\n', ' ').replace('\t', ' ')
-    while '  ' in text: 
-        text = text.replace('  ', ' ')
-    return text.strip()
+    return text
 
 if __name__ == '__main__':
     options = {
@@ -399,15 +374,15 @@ if __name__ == '__main__':
             ''.join(f'\n\t\t{k} <{display(v)}>' for k, v in options.items())
         ))
     # ------------- Exemplos: ------------------------------
-    # python qr.py "SELECT nome, idade FROM pessoas.csv WHERE idade < 35 AND sexo = 'F' ORDER BY nome LIMIT 20"
+    # "SELECT nome, idade FROM pessoas.csv WHERE idade < 35 AND sexo = 'F' ORDER BY nome LIMIT 20"
     #
-    # python qr.py "select * from pessoas.csv where nome like '%Rosa%'"
+    # "select * from pessoas.csv where nome like '%Rosa%'"
     #
-    # python qr.py "select sexo, count(*), max(idade) from pessoas.csv GROUP BY sexo order by 2 DESC"
+    # "select sexo, count(*), max(idade) from pessoas.csv GROUP BY sexo order by 2 DESC"
     #
-    # python qr.py "SELECT id_customer, count(*), sum(valor) FROM fat3.csv WHERE datahora_fatura.month=1 GROUP BY id_customer ORDER BY 2 desc LIMIT 20" -d "|" -e utf-8 -f "y-m-d"
+    # "SELECT id_customer, count(*), sum(valor) FROM fat3.csv WHERE datahora_fatura.month=1 GROUP BY id_customer ORDER BY 2 desc LIMIT 20" -d "|" -e utf-8 -f "y-m-d"
     #
-    # python qr.py "select title, movieId from movies where movieId in (527,457,362,333,260,231,163,157,151,101,50,47) LIMIT 15" -e utf-8
+    # "select title, movieId from movies where movieId in (527,457,362,333,260,231,163,157,151,101,50,47) LIMIT 15" -e utf-8
     #
-    # python qr.py  -e utf-8 -l best_movies.sql
+    #  -e utf-8 -l best_movies.sql
     # ------------------------------------------------------
