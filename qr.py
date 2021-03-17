@@ -3,7 +3,7 @@ import sys
 import csv
 from datetime import datetime as dt
 
-QR_VERSION = '0.2021.03.17 r 15.44'
+QR_VERSION = '0.2021.03.17 r 16.52'
 
 class CsvQuery:
 
@@ -81,7 +81,10 @@ class CsvQuery:
                         result.append(word)
                         word = ''
                     if c in sep_in:
-                        result.append(c)
+                        if c == '>' and result[-1] == '<':
+                            result[-1] = '<>'
+                        else:
+                            result.append(c)
         if word: result.append(word)
         return result
 
