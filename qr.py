@@ -3,7 +3,7 @@ import sys
 import csv
 from datetime import datetime as dt
 
-QR_VERSION = '0.2021.03.17 r 16.52'
+QR_VERSION = '0.2021.03.17 r 17.18'
 
 class CsvQuery:
 
@@ -173,7 +173,6 @@ class CsvQuery:
                 encoding=self.encoding,
                 date_format=self.date_format
             )
-            query.parse(True)
         except:
             query = None
         self.conditions['expr'] = '{} in {}'.format(
