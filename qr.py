@@ -177,9 +177,6 @@ class CsvQuery:
             self.conditions['fields'][-1],
             query.sample() if query else f'({param})'
         )
-        print('-*/-//*-*-*-*-/*//*/-*--*/-**/')
-        print(self.conditions)
-        print('-*/*/*-*/-*/*/*/-*/-*/*/*-*-*')
         self.parse_function = self.get_condition
 
     def get_group(self, param):
