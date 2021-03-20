@@ -3,7 +3,7 @@ import sys
 import csv
 from datetime import datetime as dt
 
-QR_VERSION = '0.2021.03.17 r 17.18'
+QR_VERSION = '0.2021.03.20 r 20.39'
 
 class CsvQuery:
 
@@ -106,14 +106,18 @@ class CsvQuery:
             return
 
     def get_fields(self, param):
-        self.all_fields = False
+        field = None
         if param in self.AGG_FUNCS:
             self.func_type = param
+            if param == 'count': field = '*'
         elif param.isidentifier():
+            self.all_fields = False
+            field = param
+        if field:
             self.field_list.setdefault(
-                param, []
+                field, []
             ).append(
-                self.func_type.lower()
+                self.func_type
             )
             self.func_type = ''
 
@@ -126,9 +130,16 @@ class CsvQuery:
                 encoding=self.encoding
             ),delimiter=self.delimiter
         )
+        count_func = self.field_list.pop('*', None)
         if self.all_fields:
-            names = self.reader.fieldnames
+            names = self.reader.fieldnames            
             self.field_list = {f: [''] for f in names}
+        else:
+            names = list(self.field_list)
+        if count_func: 
+            first_field = names[0]
+            self.field_list[first_field] = count_func
+            self.group_field = first_field
 
     def get_condition(self, param):
         COMPARE_SYMBOLS = {
@@ -137,7 +148,7 @@ class CsvQuery:
         }
         value = param
         if param in ['AND', 'OR', 'and', 'or', 'NOT', 'not']:
-            value = param.lower()
+            value = ' ' +param.lower()
         elif param in COMPARE_SYMBOLS:
             value = COMPARE_SYMBOLS[param]
         elif param.isidentifier():
@@ -218,12 +229,9 @@ class CsvQuery:
                         continue
                     value = values[field]
                     size = self.size_of[field]
-                    if func == 'count':
-                        new = func
-                    else:
-                        new = f'{func}_{field}'
-                    self.size_of[new] = max(size, len(new)) + 5
-                    record[new] = self.AGG_FUNCS[func](value)
+                    alias = f'{func}_{field}'
+                    self.size_of[alias] = max(size, len(alias)) + 5
+                    record[alias] = self.AGG_FUNCS[func](value)
             result.append(record)
         self.field_list = {f: [''] for f in record}
         return result
@@ -241,7 +249,7 @@ class CsvQuery:
                 value = row[field]
                 curr_size = len(str(value))
                 if curr_size > self.size_of.get(field, 0):
-                    self.size_of[field] = curr_size + 5
+                    self.size_of[field] = curr_size + 8
                 if self.group_field:
                     group.setdefault(key, {}).setdefault(field, []).append(
                         self.try_numeric(value)
