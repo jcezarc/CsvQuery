@@ -3,7 +3,7 @@ import sys
 import csv
 from datetime import datetime as dt
 
-QR_VERSION = '0.2021.03.20 r 20.39'
+QR_VERSION = '0.2021.03.21 r 13.31'
 
 class CsvQuery:
 
@@ -137,9 +137,9 @@ class CsvQuery:
         else:
             names = list(self.field_list)
         if count_func: 
-            first_field = names[0]
-            self.field_list[first_field] = count_func
-            self.group_field = first_field
+            field = self.group_field or names[0]
+            count_func += self.field_list.get(field, [])
+            self.field_list[field] = count_func
 
     def get_condition(self, param):
         COMPARE_SYMBOLS = {
@@ -218,49 +218,67 @@ class CsvQuery:
             exec(f"{field} = value")
         return eval(self.conditions['expr'])
 
-    def aggregate(self, group):
+    def aggregate(self, dataset):
         result = []
+        group = {}
+        for row in dataset:
+            if self.group_field: 
+                key = row[self.group_field]
+            else:
+                key = ''
+            for field in self.field_list:
+                value = row[field]
+                group.setdefault(
+                    key, {}
+                ).setdefault(
+                    field, []
+                ).append(
+                    self.try_numeric(value)
+                )
         for key, values in group.items():
             record = {}
             for field in self.field_list:
-                record[self.group_field] = key
+                if self.group_field:
+                    record[self.group_field] = key
+                value = values[field]
                 for func in self.field_list[field]:
                     if not func:
                         continue
-                    value = values[field]
                     size = self.size_of[field]
-                    alias = f'{func}_{field}'
+                    alias = func
+                    if func != 'count':
+                        alias += f'_{field}'
                     self.size_of[alias] = max(size, len(alias)) + 5
                     record[alias] = self.AGG_FUNCS[func](value)
             result.append(record)
         self.field_list = {f: [''] for f in record}
         return result
 
+    def has_function(self):
+        for field in self.field_list:
+            for func in self.field_list[field]:
+                if func:
+                    return True
+        return False
+
     def scan(self):
         result = []
-        group = {}
+        is_grouped = self.has_function()
         for row in self.reader:
             if not self.filtered_row(row):
                 continue
             record = {}
-            if self.group_field:
-                key = row[self.group_field]
             for field in self.field_list:
                 value = row[field]
                 curr_size = len(str(value))
                 if curr_size > self.size_of.get(field, 0):
                     self.size_of[field] = curr_size + 8
-                if self.group_field:
-                    group.setdefault(key, {}).setdefault(field, []).append(
-                        self.try_numeric(value)
-                    )
-                else:
-                    record[field] = value
-            if record:
-                result.append(record)
-                if len(result) == self.limit: break        
-        if group:
-            result = self.aggregate(group)
+                record[field] = value
+            result.append(record)
+            if not is_grouped and len(result) == self.limit: 
+                break
+        if is_grouped:
+            result = self.aggregate(result)
         if self.sort_by:
             if self.sort_by.isnumeric():
                 i = min(
@@ -270,7 +288,7 @@ class CsvQuery:
                 self.sort_by = list(self.field_list)[i-1]
             result = sorted(result, key=lambda k: k[self.sort_by])
             if self.reverse_sorting: result = result[::-1]
-        if group and self.limit:
+        if is_grouped and self.limit:
             result = result[:self.limit]
         return result
 
