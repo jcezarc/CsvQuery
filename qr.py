@@ -1,6 +1,7 @@
 import os
 import sys
 import csv
+import unicodedata
 from datetime import datetime as dt
 
 QR_VERSION = '0.2021.03.21 r 13.31'
@@ -122,6 +123,13 @@ class CsvQuery:
             self.func_type = ''
 
     def get_tablename(self, param):
+        def clear_text(text):
+            return unicodedata.normalize(
+                "NFD", text.replace(' ', '_')
+            ).encode(
+                "ascii", "ignore"
+            ).decode("utf-8")
+        # ---------------------------------------------
         filename, file_extension = os.path.splitext(param)
         if not file_extension:
             param += '.csv'
@@ -130,9 +138,11 @@ class CsvQuery:
                 encoding=self.encoding
             ),delimiter=self.delimiter
         )
+        names = [clear_text(field) for field in self.reader.fieldnames]
+        self.reader.fieldnames = names
+        # ---------------------------------------------
         count_func = self.field_list.pop('*', None)
         if self.all_fields:
-            names = self.reader.fieldnames            
             self.field_list = {f: [''] for f in names}
         else:
             names = list(self.field_list)
@@ -215,6 +225,8 @@ class CsvQuery:
             return True
         for field in self.conditions['fields']:
             value = self.try_numeric(row[field])
+            if not value:
+                return False
             exec(f"{field} = value")
         return eval(self.conditions['expr'])
 
@@ -331,6 +343,8 @@ class CsvQuery:
             print(line)
 
     def try_numeric(self, expr, separator='.', type_class=float):
+        if not expr:
+            return expr
         candidate = expr.replace(' ', '')
         elements = candidate.split(separator)
         if candidate.startswith('-'):
@@ -343,10 +357,12 @@ class CsvQuery:
             else:
                 return int(candidate)
         if separator == '.':
+            if ',' in expr:
+                return float(expr.replace(',', '.'))
             for char in [s for s in ['/', '-'] if s in expr]:
                 return self.try_numeric( 
                     expr, char,
-                    lambda s: dt.strptime(s, self.date_format)
+                    lambda s: dt.strptime(s[:10], self.date_format)
                 )
         return expr   
 
