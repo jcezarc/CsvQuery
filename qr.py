@@ -31,6 +31,7 @@ from datetime import datetime as dt
 QR_VERSION = '0.2021.06.02 r 18.10'
 float_separators = ['.', ',']
 date_separators = ['/', '-']
+PYTHON_V2 = sys.version.startswith('2')
 
 
 class CsvQuery:
@@ -85,11 +86,18 @@ class CsvQuery:
                 raise Exception('Unknown {}'.format(word))
 
     def clean_text(self, text):
-        return unicodedata.normalize(
-            "NFKD", unicode(text)
-        ).encode(
-            "ASCII", "ignore"
-        ) #.decode(self.encoding or 'utf-8')
+        if PYTHON_V2: 
+            return unicodedata.normalize(
+                "NFKD", unicode(text)
+            ).encode(
+                "ASCII", "ignore"
+            )
+        else:
+            return unicodedata.normalize(
+                "NFKD", text
+            ).encode(
+                "ASCII", "ignore"
+            ) .decode(self.encoding or 'utf-8')
 
     @staticmethod
     def mult_split(s, sep_out='\n\t ,*()',sep_in="><=", sublist_id='IN'):
@@ -178,7 +186,7 @@ class CsvQuery:
                     k: self.clean_text(v) 
                     for k, v in row.items()
                 })
-        print('Opening {}...'.format(filename))
+        print('Reading {}...'.format(filename))
         for curr_encoding in set([encoding, 'utf-8', 'iso8859', 'cp850', 'ascii', None]):
             try:
                 self.reader = csv.DictReader(
