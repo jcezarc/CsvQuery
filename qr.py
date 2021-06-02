@@ -1,10 +1,37 @@
+#!/usr/bin/python python
+# -*- coding: utf-8 -*-
+
+'''
+
+    QR = CLI for SQL queries in CSV files!
+         (no JOIN for now!)
+
+    ------------- Examples: ------------------------------
+    "SELECT nome, idade FROM pessoas.csv WHERE idade < 35 AND sexo = 'F' ORDER BY nome LIMIT 20"
+    
+    "select * from pessoas.csv where nome like '%Rosa%'"
+    
+    "select sexo, count(*), max(idade) from pessoas GROUP BY sexo order by 2 DESC"
+    
+    "select title, movieId from movies where movieId in (527,457,362,333,260,231,163,157,151,101,50,47) LIMIT 15" -e utf-8
+    
+     -e utf-8 -l best_movies.sql
+    ------------------------------------------------------
+
+'''
+
+
 import os
 import sys
 import csv
 import unicodedata
+from io import open
 from datetime import datetime as dt
 
-QR_VERSION = '0.2021.03.21 r 13.31'
+QR_VERSION = '0.2021.06.02 r 18.10'
+float_separators = ['.', ',']
+date_separators = ['/', '-']
+
 
 class CsvQuery:
 
@@ -22,7 +49,8 @@ class CsvQuery:
         self.date_format = date_format
         self.adjust_format()
         self.reader = None
-        self.field_list = {}
+        self.field_functions = {}
+        self.field_order = {}
         self.conditions = {
             'fields': [],
             'expr': '',
@@ -35,6 +63,8 @@ class CsvQuery:
         self.reverse_sorting = False
         self.all_fields = True
         self.func_type = ''
+        self.filename = ''
+        self.csv_data = []
         KEYWORDS = {
             'SELECT': self.get_fields,
             'FROM': self.get_tablename,
@@ -52,7 +82,14 @@ class CsvQuery:
             elif self.parse_function:
                 self.parse_function(word)
             else:
-                raise Exception(f'Unknown {word}')
+                raise Exception('Unknown {}'.format(word))
+
+    def clean_text(self, text):
+        return unicodedata.normalize(
+            "NFKD", unicode(text)
+        ).encode(
+            "ASCII", "ignore"
+        ) #.decode(self.encoding or 'utf-8')
 
     @staticmethod
     def mult_split(s, sep_out='\n\t ,*()',sep_in="><=", sublist_id='IN'):
@@ -77,6 +114,7 @@ class CsvQuery:
                     word += c
                 else:
                     if word:
+                        word = word.strip()
                         if word.upper() == sublist_id:
                             is_sub_list = True
                         result.append(word)
@@ -97,7 +135,7 @@ class CsvQuery:
         }
         if '%' in self.date_format:
             return
-        for separator in ['/', '-']:
+        for separator in date_separators:
             elements = self.date_format.lower().split(separator)
             if len(elements) < 3:
                 continue
@@ -106,50 +144,73 @@ class CsvQuery:
             ])
             return
 
+    @staticmethod
+    def get_alias(func, field):
+        if func and field:
+            separator = '_'
+        else:
+            separator = ''
+        return '{}{}{}'.format(func, separator, field)
+
     def get_fields(self, param):
         field = None
         if param in self.AGG_FUNCS:
             self.func_type = param
-            if param == 'count': field = '*'
-        elif param.isidentifier():
+            if param == 'count': field = ''
+        elif param and param[0].isalpha():
             self.all_fields = False
             field = param
-        if field:
-            self.field_list.setdefault(
+        if not field is None:
+            self.field_functions.setdefault(
                 field, []
             ).append(
                 self.func_type
             )
+            index = len(self.field_functions)
+            self.field_order[index] = self.get_alias(self.func_type, field)
             self.func_type = ''
 
+    def read_csv(self, filename, encoding, delimiter):
+        def get_data():
+            self.csv_data = []
+            for row in self.reader:
+                self.csv_data.append({
+                    k: self.clean_text(v) 
+                    for k, v in row.items()
+                })
+        print('Opening {}...'.format(filename))
+        for curr_encoding in set([encoding, 'utf-8', 'iso8859', 'cp850', 'ascii', None]):
+            try:
+                self.reader = csv.DictReader(
+                    open(filename, 'r', 
+                        encoding=curr_encoding
+                    ),delimiter=delimiter
+                )
+                get_data()
+                return True
+            except Exception as e:
+                print('\tEncoding fail: {}'.format(curr_encoding))
+                print(e)
+                print('-'*100)
+                continue
+        return False
+
     def get_tablename(self, param):
-        def clear_text(text):
-            return unicodedata.normalize(
-                "NFD", text.replace(' ', '_')
-            ).encode(
-                "ascii", "ignore"
-            ).decode("utf-8")
-        # ---------------------------------------------
-        filename, file_extension = os.path.splitext(param)
+        self.filename, file_extension = os.path.splitext(param)
         if not file_extension:
-            param += '.csv'
-        self.reader = csv.DictReader(
-            open(param, 'r', 
-                encoding=self.encoding
-            ),delimiter=self.delimiter
-        )
-        names = [clear_text(field) for field in self.reader.fieldnames]
+            file_extension = '.csv'
+        self.filename += file_extension
+        ok = self.read_csv(self.filename, self.encoding, self.delimiter)
+        if not ok:
+            raise Exception('Invalid file structure in {}'.format(self.filename))
+        names = [
+            self.clean_text(field.replace(' ', '_'))
+            for field in self.reader.fieldnames
+        ]
         self.reader.fieldnames = names
-        # ---------------------------------------------
-        count_func = self.field_list.pop('*', None)
         if self.all_fields:
-            self.field_list = {f: [''] for f in names}
-        else:
-            names = list(self.field_list)
-        if count_func: 
-            field = self.group_field or names[0]
-            count_func += self.field_list.get(field, [])
-            self.field_list[field] = count_func
+            self.field_order = {k+1: v for k, v in enumerate(names)}
+            self.field_functions = {f: [''] for f in names}
 
     def get_condition(self, param):
         COMPARE_SYMBOLS = {
@@ -161,7 +222,7 @@ class CsvQuery:
             value = ' ' +param.lower()
         elif param in COMPARE_SYMBOLS:
             value = COMPARE_SYMBOLS[param]
-        elif param.isidentifier():
+        elif param and param[0].isalpha():
             self.conditions['fields'].append(param)
         elif '.' in param:
             self.conditions['fields'].append(
@@ -198,7 +259,7 @@ class CsvQuery:
             query = None
         self.conditions['expr'] = '{} in {}'.format(
             self.conditions['fields'][-1],
-            query.sample() if query else f'({param})'
+            query.sample() if query else '({})'.format(param)
         )
         self.parse_function = self.get_condition
 
@@ -227,85 +288,70 @@ class CsvQuery:
             value = self.try_numeric(row[field])
             if not value:
                 return False
-            exec(f"{field} = value")
+            exec("{} = value".format(field))
         return eval(self.conditions['expr'])
 
-    def aggregate(self, dataset):
+    def aggregate(self, group):
         result = []
-        group = {}
-        for row in dataset:
-            if self.group_field: 
-                key = row[self.group_field]
-            else:
-                key = ''
-            for field in self.field_list:
-                value = row[field]
-                group.setdefault(
-                    key, {}
-                ).setdefault(
-                    field, []
-                ).append(
-                    self.try_numeric(value)
-                )
         for key, values in group.items():
             record = {}
-            for field in self.field_list:
+            for field in self.field_functions:
                 if self.group_field:
                     record[self.group_field] = key
-                value = values[field]
-                for func in self.field_list[field]:
+                for func in self.field_functions[field]:
                     if not func:
                         continue
-                    size = self.size_of[field]
-                    alias = func
-                    if func != 'count':
-                        alias += f'_{field}'
-                    self.size_of[alias] = max(size, len(alias)) + 5
-                    record[alias] = self.AGG_FUNCS[func](value)
+                    alias = self.get_alias(func, field)
+                    record[alias] = self.AGG_FUNCS[func](
+                        values[field]
+                    )
             result.append(record)
-        self.field_list = {f: [''] for f in record}
         return result
-
-    def has_function(self):
-        for field in self.field_list:
-            for func in self.field_list[field]:
-                if func:
-                    return True
-        return False
 
     def scan(self):
         result = []
-        is_grouped = self.has_function()
-        for row in self.reader:
+        group = {}
+        for row in self.csv_data:
             if not self.filtered_row(row):
                 continue
             record = {}
-            for field in self.field_list:
-                value = row[field]
-                curr_size = len(str(value))
-                if curr_size > self.size_of.get(field, 0):
-                    self.size_of[field] = curr_size + 8
-                record[field] = value
-            result.append(record)
-            if not is_grouped and len(result) == self.limit: 
-                break
-        if is_grouped:
-            result = self.aggregate(result)
+            for field in self.field_functions:
+                value = row.get(field, '')
+                if self.group_field:
+                    key = row[self.group_field]
+                    group.setdefault(
+                        key, {}
+                    ).setdefault(
+                        field, []
+                    ).append(
+                        self.try_numeric(value)
+                    )
+                elif value:
+                    curr_size = len(str(value))
+                    if curr_size > self.size_of.get(field, len(field)+5):
+                        curr_size += 5
+                        self.size_of[field] = min(70, curr_size)
+                    record[field] = value
+            if not self.group_field:
+                result.append(record)
+                if len(result) == self.limit: break
+        if group:
+            result = self.aggregate(group)
         if self.sort_by:
-            if self.sort_by.isnumeric():
-                i = min(
-                    int(self.sort_by),
-                    len(self.field_list)
-                )
-                self.sort_by = list(self.field_list)[i-1]
+            try:
+                by_index = int(self.sort_by)
+            except:
+                by_index = 0
+            if by_index:
+                self.sort_by = self.field_order[by_index]
             result = sorted(result, key=lambda k: k[self.sort_by])
             if self.reverse_sorting: result = result[::-1]
-        if is_grouped and self.limit:
+        if self.group_field and self.limit:
             result = result[:self.limit]
         return result
 
     def sample(self):
-        field = list(self.field_list)[0]
+        field = self.field_order[1]
         result = []
         for row in self.scan():
             result.append(
@@ -318,52 +364,52 @@ class CsvQuery:
             s += ' ' * size
             return s[:size]
         head = '\n'
+        sub = ''
         line = ''
-        dataset = self.scan()
-        for field, size in self.size_of.items():
-            if field not in self.field_list:
-                continue
-            head += truncate(field, size)
-            line += '-' * (size-3) + '-+-'
-        print(head)
-        print(line)
-        for row in dataset:
+        count = 0
+        for row in self.scan():
             line = ''
-            for field in self.field_list:
-                if not field:
-                    continue
-                if field not in self.size_of:
-                    size = 10
-                else:
-                    size = self.size_of[field]
+            for index in sorted(self.field_order):
+                field = self.field_order[index]
+                size = self.size_of.get(field, len(field)+5)
+                if head:
+                    head += truncate(' '+field, size)
+                    sub += '-' * (size-3) + '-+-'
                 line += truncate(
                     str(row[field]),
                     size-3
                 ) + ' | '
+            if head:
+                print(head)
+                print(sub)
+                head = ''
             print(line)
 
-    def try_numeric(self, expr, separator='.', type_class=float):
-        if not expr:
-            return expr
-        candidate = expr.replace(' ', '')
-        elements = candidate.split(separator)
-        if candidate.startswith('-'):
-            is_number = elements[0].strip('-').isnumeric()
-        else:
-            is_number = elements[0].isnumeric()
+    def try_numeric(self, expr):
+        candidate = self.clean_text(expr).replace(' ', '')
+        negative = candidate.startswith('-')
+        is_number = True
+        for c in candidate:
+            if c.isalpha():
+                is_number = False
+                break
+            if not negative and c in date_separators:
+                try:
+                    return dt.strptime(candidate[:10], self.date_format)
+                except:
+                    is_number = False
+                    break
+            elif c in float_separators:
+                try:
+                    return float(candidate.replace(',', '.'))
+                except:
+                    is_number = False
+                    break
         if is_number:
-            if len(elements) > 1:
-                return type_class(candidate)
-            else:
+            try:
                 return int(candidate)
-        if separator == '.':
-            if ',' in expr:
-                return float(expr.replace(',', '.'))
-            for char in [s for s in ['/', '-'] if s in expr]:
-                return self.try_numeric( 
-                    expr, char,
-                    lambda s: dt.strptime(s[:10], self.date_format)
-                )
+            except:
+                pass
         return expr   
 
 
@@ -412,18 +458,6 @@ if __name__ == '__main__':
             options: {}
         '''.format(
             QR_VERSION,
-            ''.join(f'\n\t\t{k} <{display(v)}>' for k, v in options.items())
+            ''.join('\n\t\t{} <{}>'.format(k, display(v))
+             for k, v in options.items())
         ))
-    # ------------- Exemplos: ------------------------------
-    # "SELECT nome, idade FROM pessoas.csv WHERE idade < 35 AND sexo = 'F' ORDER BY nome LIMIT 20"
-    #
-    # "select * from pessoas.csv where nome like '%Rosa%'"
-    #
-    # "select sexo, count(*), max(idade) from pessoas.csv GROUP BY sexo order by 2 DESC"
-    #
-    # "SELECT id_customer, count(*), sum(valor) FROM fat3.csv WHERE datahora_fatura.month=1 GROUP BY id_customer ORDER BY 2 desc LIMIT 20" -d "|" -e utf-8 -f "y-m-d"
-    #
-    # "select title, movieId from movies where movieId in (527,457,362,333,260,231,163,157,151,101,50,47) LIMIT 15" -e utf-8
-    #
-    #  -e utf-8 -l best_movies.sql
-    # ------------------------------------------------------
